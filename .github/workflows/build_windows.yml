@@ -1,4 +1,4 @@
-name: build-packages
+name: build-windows-packages
 
 # Manual runs only. Builds the Windows (x64) package and uploads it as a
 # workflow artifact. No release is published.
