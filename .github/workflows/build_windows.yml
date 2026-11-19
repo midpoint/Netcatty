@@ -1,0 +1,118 @@
+name: build-packages
+
+# Manual runs only. Builds the Windows (x64) package and uploads it as a
+# workflow artifact. No release is published.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # npm retries only transient registry fetches; deterministic install or
+  # postinstall failures still fail immediately.
+  NPM_CONFIG_FETCH_RETRIES: "4"
+  NPM_CONFIG_FETCH_RETRY_FACTOR: "2"
+  NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
+  NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "10000"
+
+jobs:
+  build-windows:
+    name: build-windows
+    runs-on: windows-latest
+    env:
+      VITE_SYNC_GITHUB_CLIENT_ID: ${{ secrets.VITE_SYNC_GITHUB_CLIENT_ID }}
+      VITE_SYNC_GOOGLE_CLIENT_ID: ${{ secrets.VITE_SYNC_GOOGLE_CLIENT_ID }}
+      VITE_SYNC_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_SYNC_GOOGLE_CLIENT_SECRET }}
+      VITE_SYNC_ONEDRIVE_CLIENT_ID: ${{ secrets.VITE_SYNC_ONEDRIVE_CLIENT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up MSVC developer command prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Restore Electron download cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Test Windows serial pipe through native Electron
+        run: npx electron scripts/serial-named-pipe.live.test.cjs
+
+      - name: Compile ConPTY test helpers
+        shell: pwsh
+        run: |
+          $compiler = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $compiler)) { throw "csc.exe not found" }
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\netcatty-mosh-conpty" | Out-Null
+          & $compiler /nologo /target:exe /out:"$env:RUNNER_TEMP\netcatty-mosh-conpty\ssh.exe" electron\bridges\fixtures\mosh-conpty-fake-ssh.cs
+          if ($LASTEXITCODE -ne 0) { throw "failed to compile fake ssh" }
+          & $compiler /nologo /target:exe /out:"$env:RUNNER_TEMP\netcatty-mosh-conpty\mosh-client.exe" electron\bridges\fixtures\mosh-conpty-fake-client.cs
+          if ($LASTEXITCODE -ne 0) { throw "failed to compile fake mosh-client" }
+
+      - name: Test Mosh handshake through ConPTY
+        shell: pwsh
+        env:
+          NETCATTY_TEST_MOSH_SSH_EXE: ${{ runner.temp }}\netcatty-mosh-conpty\ssh.exe
+          NETCATTY_TEST_MOSH_CLIENT_EXE: ${{ runner.temp }}\netcatty-mosh-conpty\mosh-client.exe
+        run: |
+          node --test electron/bridges/moshHandshake.test.cjs
+          node electron/bridges/terminalBridge.moshConpty.integration.cjs
+
+      - name: Set version
+        shell: bash
+        run: |
+          # Manual builds are not releases, so stamp a semver pre-release
+          # form (`0.0.0-sha-<short-sha>`) that npm pkg / electron-builder
+          # accept. Non-semver versions cause downstream tooling to error.
+          VERSION="0.0.0-sha-${GITHUB_SHA:0:7}"
+          echo "Setting version to ${VERSION}"
+          npm pkg set version="${VERSION}"
+
+      # Official Windows packages are x64-only for now. Bundled native
+      # helpers are win32-x64, and the win target must not hard-code arm64
+      # or the x64 job emits broken win-arm64 packages (#2570).
+      - name: Build package
+        env:
+          ELECTRON_BUILDER_PUBLISH: "never"
+        run: npm run pack:win-x64
+
+      - name: Test packaged SSH cipher negotiation
+        run: node scripts/test-packaged-ssh-ciphers.cjs
+
+      - name: Test tray panel layout
+        run: npm run test:tray-panel-layout
+
+      - name: Test tray panel layout at 200% scale
+        env:
+          NETCATTY_TRAY_LAYOUT_SCALE: "2"
+        run: npm run test:tray-panel-layout
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: netcatty-windows
+          path: |
+            release/*.exe
+            release/*.msi
+            release/*.zip
+            release/*.yml
+            release/*.blockmap
+          if-no-files-found: ignore
