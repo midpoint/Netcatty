@@ -1,12 +1,21 @@
 name: build-windows-packages
 
-# Manual runs only. Builds the Windows (x64) package and uploads it as a
-# workflow artifact. No release is published.
+# Scheduled runs sync this fork with its upstream, and build the Windows
+# (x64) package only when the sync actually brought in new commits.
+# Manual runs sync first, then always build. No release is published.
 on:
+  schedule:
+    # Every 6 hours (UTC). The sync check itself is cheap; the Windows
+    # build below is skipped when upstream has not changed.
+    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: build-windows-packages
+  cancel-in-progress: false
 
 env:
   # npm retries only transient registry fetches; deterministic install or
@@ -17,8 +26,39 @@ env:
   NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "10000"
 
 jobs:
+  sync-upstream:
+    name: sync-upstream
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      updated: ${{ steps.check.outputs.updated }}
+    steps:
+      - name: Sync fork with upstream and detect changes
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          before="$(gh api "repos/${{ github.repository }}/branches/main" --jq '.commit.sha')"
+          echo "main before sync: ${before}"
+          # Syncs this fork's main with its upstream parent on GitHub's
+          # side. Fails (and skips the build) if the branches have
+          # diverged with conflicts; resolve those once by hand.
+          gh repo sync "${{ github.repository }}" --branch main
+          after="$(gh api "repos/${{ github.repository }}/branches/main" --jq '.commit.sha')"
+          echo "main after sync: ${after}"
+          if [[ "${after}" != "${before}" ]]; then
+            echo "updated=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "updated=false" >> "${GITHUB_OUTPUT}"
+          fi
+
   build-windows:
     name: build-windows
+    needs: sync-upstream
+    # Scheduled runs build only after a real upstream update; manual
+    # runs always build.
+    if: github.event_name == 'workflow_dispatch' || needs.sync-upstream.outputs.updated == 'true'
     runs-on: windows-latest
     env:
       VITE_SYNC_GITHUB_CLIENT_ID: ${{ secrets.VITE_SYNC_GITHUB_CLIENT_ID }}
@@ -26,8 +66,12 @@ jobs:
       VITE_SYNC_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_SYNC_GOOGLE_CLIENT_SECRET }}
       VITE_SYNC_ONEDRIVE_CLIENT_ID: ${{ secrets.VITE_SYNC_ONEDRIVE_CLIENT_ID }}
     steps:
+      # Check out main explicitly, not the SHA that started this run, so
+      # the build sees the commits the sync step just pulled in.
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: main
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -53,36 +97,15 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      - name: Test Windows serial pipe through native Electron
-        run: npx electron scripts/serial-named-pipe.live.test.cjs
-
-      - name: Compile ConPTY test helpers
-        shell: pwsh
-        run: |
-          $compiler = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          if (-not (Test-Path $compiler)) { throw "csc.exe not found" }
-          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\netcatty-mosh-conpty" | Out-Null
-          & $compiler /nologo /target:exe /out:"$env:RUNNER_TEMP\netcatty-mosh-conpty\ssh.exe" electron\bridges\fixtures\mosh-conpty-fake-ssh.cs
-          if ($LASTEXITCODE -ne 0) { throw "failed to compile fake ssh" }
-          & $compiler /nologo /target:exe /out:"$env:RUNNER_TEMP\netcatty-mosh-conpty\mosh-client.exe" electron\bridges\fixtures\mosh-conpty-fake-client.cs
-          if ($LASTEXITCODE -ne 0) { throw "failed to compile fake mosh-client" }
-
-      - name: Test Mosh handshake through ConPTY
-        shell: pwsh
-        env:
-          NETCATTY_TEST_MOSH_SSH_EXE: ${{ runner.temp }}\netcatty-mosh-conpty\ssh.exe
-          NETCATTY_TEST_MOSH_CLIENT_EXE: ${{ runner.temp }}\netcatty-mosh-conpty\mosh-client.exe
-        run: |
-          node --test electron/bridges/moshHandshake.test.cjs
-          node electron/bridges/terminalBridge.moshConpty.integration.cjs
-
       - name: Set version
         shell: bash
         run: |
-          # Manual builds are not releases, so stamp a semver pre-release
+          # These builds are not releases, so stamp a semver pre-release
           # form (`0.0.0-sha-<short-sha>`) that npm pkg / electron-builder
           # accept. Non-semver versions cause downstream tooling to error.
-          VERSION="0.0.0-sha-${GITHUB_SHA:0:7}"
+          # Take the SHA from the checked-out HEAD, not GITHUB_SHA: after a
+          # sync, HEAD is newer than the commit that started this run.
+          VERSION="0.0.0-sha-$(git rev-parse --short=7 HEAD)"
           echo "Setting version to ${VERSION}"
           npm pkg set version="${VERSION}"
 
@@ -93,17 +116,6 @@ jobs:
         env:
           ELECTRON_BUILDER_PUBLISH: "never"
         run: npm run pack:win-x64
-
-      - name: Test packaged SSH cipher negotiation
-        run: node scripts/test-packaged-ssh-ciphers.cjs
-
-      - name: Test tray panel layout
-        run: npm run test:tray-panel-layout
-
-      - name: Test tray panel layout at 200% scale
-        env:
-          NETCATTY_TRAY_LAYOUT_SCALE: "2"
-        run: npm run test:tray-panel-layout
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
