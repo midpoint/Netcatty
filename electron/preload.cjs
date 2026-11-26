@@ -493,11 +493,11 @@ ipcRenderer.on("netcatty:exit", (_event, payload) => {
 
 // Chain progress events (for jump host connections)
 ipcRenderer.on("netcatty:chain:progress", (_event, payload) => {
-  const { sessionId, hop, total, label, status, error } = payload;
+  const { sessionId, hop, total, label, status, error, address } = payload;
   // Notify all registered chain progress listeners
   chainProgressListeners.forEach((cb) => {
     try {
-      cb(sessionId, hop, total, label, status, error);
+      cb(sessionId, hop, total, label, status, error, address);
     } catch (err) {
       console.error("Chain progress callback failed", err);
     }
@@ -945,8 +945,8 @@ const api = createPreloadApi({
 
 // Fig autocomplete spec loading via main process
 const figSpecApi = {
-  listFigSpecs: () => ipcRenderer.invoke("netcatty:figspec:list"),
-  loadFigSpec: (commandName) => ipcRenderer.invoke("netcatty:figspec:load", commandName),
+  listFigSpecs: (hostOs) => ipcRenderer.invoke("netcatty:figspec:list", hostOs),
+  loadFigSpec: (commandName, hostOs) => ipcRenderer.invoke("netcatty:figspec:load", commandName, hostOs),
   listAutocompleteRemoteDir: (sessionId, dirPath, foldersOnly, filterPrefix, limit) => ipcRenderer.invoke("netcatty:ssh:listdir", {
     sessionId,
     path: dirPath,

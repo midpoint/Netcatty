@@ -19,12 +19,7 @@ import {
 } from '../ai-elements/conversation';
 import { LazyMessageResponse } from '../ai-elements/LazyMessageResponse';
 import { Message, MessageContent } from '../ai-elements/messageShell';
-import {
-  AI_MARKDOWN_WARMUP_INITIAL_DELAY_MS,
-  AI_MARKDOWN_WARMUP_RESUME_DELAY_MS,
-  isAiComposerTyping,
-  scheduleAiMarkdownWarmup,
-} from './aiMarkdownWarmup';
+import { warmAiMarkdownRenderer } from './aiMarkdownWarmup';
 import { ToolCall } from '../ai-elements/tool-call';
 import ThinkingBlock from './ThinkingBlock';
 import AgentActivityGroup from './AgentActivityGroup';
@@ -393,16 +388,11 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
     [messages],
   );
 
-  // Do not start Streamdown on expand. Import cannot be cancelled, and idle
-  // right after open collides with the first few keystrokes. History stays
-  // plaintext until send, composer blur, or a long unfocused delay.
+  // Warm Streamdown immediately once assistant markdown is on screen so opening
+  // any chat renders formatted markdown right away instead of sitting as raw text.
   useEffect(() => {
-    if (!hasAssistantMarkdown) return undefined;
-    return scheduleAiMarkdownWarmup({
-      isBusy: isAiComposerTyping,
-      initialDelayMs: AI_MARKDOWN_WARMUP_INITIAL_DELAY_MS,
-      resumeDelayMs: AI_MARKDOWN_WARMUP_RESUME_DELAY_MS,
-    });
+    if (!hasAssistantMarkdown) return;
+    void warmAiMarkdownRenderer();
   }, [hasAssistantMarkdown]);
 
   const visibleMessages = useMemo(
@@ -715,29 +705,29 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
                       !att.vaultNoteId && (att.contentUnavailable || !att.base64Data) ? (
                         <div
                           key={att.filename ? `${att.filename}-${i}` : `att-${message.id}-${i}`}
-                          className="inline-flex items-center gap-1.5 min-h-7 px-2 py-1 rounded-md bg-muted/20 border border-border/20 text-[11px] text-foreground/70"
+                          className="inline-flex items-center gap-1.5 min-h-7 px-2 py-1 rounded-md bg-background/60 border border-primary/20 text-[11px] text-foreground/80"
                           title={t('ai.chat.attachmentContentUnavailable')}
                         >
                           {att.terminalSelection
-                            ? <SquareTerminal size={12} className="text-muted-foreground/60 shrink-0" />
-                            : <FileText size={12} className="text-muted-foreground/60 shrink-0" />}
+                            ? <SquareTerminal size={12} className="text-foreground/60 shrink-0" />
+                            : <FileText size={12} className="text-foreground/60 shrink-0" />}
                           <span className="truncate max-w-[150px]">{att.filename || (att.terminalSelection ? 'terminal selection' : 'file')}</span>
                           <span className="text-muted-foreground">{t('ai.chat.attachmentContentUnavailable')}</span>
                         </div>
                       ) : att.terminalSelection ? (
                         <div
                           key={att.filename ? `${att.filename}-${i}` : `att-${message.id}-${i}`}
-                          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md bg-muted/20 border border-border/20 text-[11px] text-foreground/70"
+                          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md bg-background/60 border border-primary/20 text-[11px] text-foreground/80"
                         >
-                          <SquareTerminal size={12} className="text-muted-foreground/60 shrink-0" />
+                          <SquareTerminal size={12} className="text-foreground/60 shrink-0" />
                           <span className="truncate max-w-[150px]">{att.filename || 'terminal selection'}</span>
                         </div>
                       ) : att.vaultNoteId ? (
                         <div
                           key={att.filename ? `${att.filename}-${i}` : `att-${message.id}-${i}`}
-                          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md bg-muted/20 border border-border/20 text-[11px] text-foreground/70"
+                          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md bg-background/60 border border-primary/20 text-[11px] text-foreground/80"
                         >
-                          <BookOpen size={12} className="text-muted-foreground/60 shrink-0" />
+                          <BookOpen size={12} className="text-foreground/60 shrink-0" />
                           <span className="truncate max-w-[150px]">{att.vaultNoteTitle || att.filename || 'note'}</span>
                         </div>
                       ) : att.mediaType.startsWith('image/') ? (
@@ -745,15 +735,15 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
                           key={att.filename ? `${att.filename}-${i}` : `att-${message.id}-${i}`}
                           src={`data:${att.mediaType};base64,${att.base64Data}`}
                           alt={att.filename || 'image'}
-                          className="max-h-[120px] max-w-[200px] rounded-md object-contain border border-border/20 cursor-pointer hover:opacity-80 transition-opacity"
+                          className="max-h-[120px] max-w-[200px] rounded-md object-contain border border-primary/20 cursor-pointer hover:opacity-80 transition-opacity"
                           onClick={() => openPreview(`data:${att.mediaType};base64,${att.base64Data}`, att.filename || 'image')}
                         />
                       ) : (
                         <div
                           key={att.filename ? `${att.filename}-${i}` : `att-${message.id}-${i}`}
-                          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md bg-muted/20 border border-border/20 text-[11px] text-foreground/70"
+                          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md bg-background/60 border border-primary/20 text-[11px] text-foreground/80"
                         >
-                          <FileText size={12} className="text-muted-foreground/60 shrink-0" />
+                          <FileText size={12} className="text-foreground/60 shrink-0" />
                           <span className="truncate max-w-[120px]">{att.filename || 'file'}</span>
                         </div>
                       )
@@ -776,7 +766,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({
                       : (
                           <React.Profiler {...getAIPanelProfilerProps('AIChatPanel.Markdown')}>
                             <div data-ai-content="markdown">
-                              <LazyMessageResponse deferUntilWarm isAnimating={!!isThisStreaming}>
+                              <LazyMessageResponse isAnimating={!!isThisStreaming}>
                                 {message.content}
                               </LazyMessageResponse>
                             </div>

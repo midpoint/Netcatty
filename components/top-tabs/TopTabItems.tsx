@@ -5,7 +5,11 @@ import {
   useAnySessionActivity,
   useSessionActivity,
 } from '../../application/state/sessionActivityStore';
-import { usePresentedSession } from '../../application/state/sessionPresentationStore';
+import {
+  applySessionPresentation,
+  usePresentedSession,
+  useSessionPresentationVersion,
+} from '../../application/state/sessionPresentationStore';
 import {
   useEditorTabDirty,
   type EditorTabChrome,
@@ -16,11 +20,15 @@ import { useShortcutModifierHeldValue } from '../../application/state/useShortcu
 import { terminalReconnectRegistry } from '../../application/state/terminalReconnectRegistry';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import { getEffectiveHostDistro } from '../../domain/host';
+import { isPluginHostProtocol } from '../../domain/pluginConnection';
 import { resolveHostIconAppearance, resolveHostIconColorAppearance } from '../../domain/hostIcon';
 import { resolveSessionCodingCliProvider } from '../../domain/codingCliProviderMatch';
 import type { CodingCliProvider } from '../../domain/codingCliProviders';
 import { resolveCodingCliActivityPhase, type CodingCliActivityPhase } from '../../domain/codingCliTitleParse';
-import { resolveSessionTabTitle, resolveWorkspaceTabLabel } from '../../domain/sessionTabTitle';
+import {
+  resolveSessionTabTitle,
+  resolveWorkspaceTabLabel,
+} from '../../domain/sessionTabTitle';
 import type { DynamicTabTitleMode, TerminalTabDoubleClickBehavior } from '../../domain/models';
 import { CodingCliProviderIcon } from '../icons/CodingCliProviderIcon';
 import { cn } from '../../lib/utils';
@@ -242,17 +250,33 @@ export const formatSessionTopTabTooltip = (
 export const formatSessionTopTabLabel = (
   session: Pick<
     TerminalSession,
-    'customName' | 'hostLabel' | 'dynamicTitle' | 'codingCliProviderId' | 'protocol' | 'hostname' | 'moshEnabled' | 'etEnabled'
+    'customName' | 'hostLabel' | 'promptHostname' | 'dynamicTitle' | 'codingCliProviderId' | 'protocol' | 'hostname' | 'moshEnabled' | 'etEnabled'
   >,
   dynamicTabTitleMode?: DynamicTabTitleMode,
 ): string => {
   return resolveSessionTabTitle(session, dynamicTabTitleMode);
 };
 
+type WorkspaceTopTabLabelWorkspace = Pick<
+  Workspace,
+  'title' | 'focusedSessionId' | 'autoTitle' | 'generatedTitle'
+>;
+
+export const resolveWorkspaceTopTabLabel = (
+  workspace: WorkspaceTopTabLabelWorkspace,
+  sessions: readonly TerminalSession[],
+  dynamicTabTitleMode?: DynamicTabTitleMode,
+): string => {
+  return resolveWorkspaceTabLabel(workspace, sessions.map(applySessionPresentation), dynamicTabTitleMode);
+};
+
 export const createTopTabCopyDoubleClickHandler = (
   onCopy: (id: string) => void,
   id: string,
-): React.MouseEventHandler<HTMLDivElement> => () => onCopy(id);
+  behavior: TerminalTabDoubleClickBehavior,
+): React.MouseEventHandler<HTMLDivElement> => () => {
+  if (behavior !== 'disabled') onCopy(id);
+};
 
 export const createTopTabSessionDoubleClickHandler = ({
   behavior,
@@ -792,6 +816,7 @@ interface SessionTopTabProps {
   onCopySession: (sessionId: string) => void;
   onDuplicateSession?: (sessionId: string) => void;
   onCopySessionToNewWindow: (sessionId: string) => void;
+  onMoveSessionToNewWindow?: (sessionId: string) => void;
   onEditHost?: (host: Host) => void;
   renderBulkCloseItems: RenderBulkCloseItems;
   dynamicTabTitleMode?: DynamicTabTitleMode;
@@ -819,6 +844,7 @@ export const SessionTopTab: React.FC<SessionTopTabProps> = memo(({
   onCopySession,
   onDuplicateSession,
   onCopySessionToNewWindow,
+  onMoveSessionToNewWindow,
   onEditHost,
   renderBulkCloseItems,
   dynamicTabTitleMode,
@@ -962,6 +988,11 @@ export const SessionTopTab: React.FC<SessionTopTabProps> = memo(({
         onCopySession={onCopySession}
         onDuplicateSession={onDuplicateSession}
         onCopySessionToNewWindow={onCopySessionToNewWindow}
+        onMoveSessionToNewWindow={
+          (isPluginHostProtocol(session.protocol) || session.protocol?.startsWith('plugin:'))
+            ? undefined
+            : onMoveSessionToNewWindow
+        }
         onReconnectSession={terminalReconnectRegistry.request}
         sessionStatus={session.status}
         reconnectActive={reconnectActive}
@@ -978,6 +1009,7 @@ SessionTopTab.displayName = 'SessionTopTab';
 
 interface WorkspaceTopTabProps {
   workspace: Workspace;
+  tabDoubleClickBehavior: TerminalTabDoubleClickBehavior;
   paneCount: number;
   workspaceSessionIds: readonly string[];
   isBeingDragged: boolean;
@@ -1027,6 +1059,7 @@ WorkspaceDetachSessionMenuItem.displayName = 'WorkspaceDetachSessionMenuItem';
 
 export const WorkspaceTopTab: React.FC<WorkspaceTopTabProps> = memo(({
   workspace,
+  tabDoubleClickBehavior,
   paneCount,
   workspaceSessionIds,
   workspaceSessions,
@@ -1053,15 +1086,16 @@ export const WorkspaceTopTab: React.FC<WorkspaceTopTabProps> = memo(({
 }) => {
   const isActive = useIsTabActive(workspace.id);
   const hasActivity = useAnySessionActivity(workspaceSessionIds);
+  useSessionPresentationVersion();
   const handleClick = useCallback(() => {
     activeTabStore.setActiveTabId(workspace.id);
   }, [workspace.id]);
   const handleDoubleClick = useMemo(
-    () => createTopTabCopyDoubleClickHandler(onCopyWorkspace, workspace.id),
-    [onCopyWorkspace, workspace.id],
+    () => createTopTabCopyDoubleClickHandler(onCopyWorkspace, workspace.id, tabDoubleClickBehavior),
+    [onCopyWorkspace, workspace.id, tabDoubleClickBehavior],
   );
   const detachSessions = workspaceSessions ?? [];
-  const tabLabel = resolveWorkspaceTabLabel(workspace, detachSessions);
+  const tabLabel = resolveWorkspaceTopTabLabel(workspace, detachSessions, dynamicTabTitleMode);
 
   return (
     <ContextMenu>

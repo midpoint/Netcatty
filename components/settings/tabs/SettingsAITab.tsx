@@ -20,6 +20,7 @@ import type {
 } from "../../../infrastructure/ai/types";
 import type { ManagedAgentKey } from "../../../infrastructure/ai/managedAgents";
 import { PROVIDER_PRESETS } from "../../../infrastructure/ai/types";
+import { withOpencodeGoAutoConfiguredModel, shouldAutoActivateOpencodeGo } from "../../../infrastructure/ai/opencodeGo";
 import { useI18n } from "../../../application/i18n/I18nProvider";
 import { Button } from "../../ui/button";
 import { ConfirmDialog } from "../../ui/confirm-dialog";
@@ -164,6 +165,8 @@ interface SettingsAITabProps {
   setResponseIdleTimeout: (value: number) => void;
   maxIterations: number;
   setMaxIterations: (value: number) => void;
+  toolOutputMaxChars: number;
+  setToolOutputMaxChars: (value: number) => void;
   aiSessionMessageCap: number;
   setAiSessionMessageCap: (value: number) => void;
   webSearchConfig: WebSearchConfig | null;
@@ -203,6 +206,8 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
   setResponseIdleTimeout,
   maxIterations,
   setMaxIterations,
+  toolOutputMaxChars,
+  setToolOutputMaxChars,
   aiSessionMessageCap,
   setAiSessionMessageCap,
   webSearchConfig,
@@ -1101,9 +1106,16 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
                     }
                     onRemove={() => handleRemoveProvider(provider.id)}
                     onUpdate={(updates) => {
-                      updateProvider(provider.id, updates);
-                      if (provider.id === activeProviderId && updates.defaultModel !== undefined) {
-                        setActiveModelId(updates.defaultModel || "");
+                      const nextUpdates = withOpencodeGoAutoConfiguredModel(provider, updates);
+                      updateProvider(provider.id, nextUpdates);
+                      if (provider.id === activeProviderId && nextUpdates.defaultModel !== undefined) {
+                        setActiveModelId(nextUpdates.defaultModel || "");
+                      }
+                      const otherProvidersEnabled = providers.some((p) => p.id !== provider.id && p.enabled);
+                      if (shouldAutoActivateOpencodeGo(provider, otherProvidersEnabled, !!nextUpdates.apiKey)) {
+                        updateProvider(provider.id, { enabled: true });
+                        setActiveProviderId(provider.id);
+                        setActiveModelId(nextUpdates.defaultModel || provider.defaultModel || "");
                       }
                     }}
                     isEditing={editingProviderId === provider.id}
@@ -1481,6 +1493,8 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
             setResponseIdleTimeout={setResponseIdleTimeout}
             maxIterations={maxIterations}
             setMaxIterations={setMaxIterations}
+            toolOutputMaxChars={toolOutputMaxChars}
+            setToolOutputMaxChars={setToolOutputMaxChars}
           />
           <PermissionGrantsSettings
             grants={permissionGrants}

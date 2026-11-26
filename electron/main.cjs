@@ -300,6 +300,36 @@ const portableData = applyPortableDataDirectory({ app });
 if (portableData) {
   console.info(`[Main] Portable data directory: ${portableData.dataDirectory}`);
 }
+const { guardLocalStorageLevelDb } = require("./leveldbStorageGuard.cjs");
+const levelDbGuardResult = guardLocalStorageLevelDb({
+  userDataDir: app.getPath("userData"),
+});
+if (levelDbGuardResult.status === "recovered") {
+  console.warn(
+    `[Main] Recovered missing Local Storage LevelDB CURRENT -> ${levelDbGuardResult.manifest} (backup: ${levelDbGuardResult.backupDir})`,
+  );
+} else if (
+  levelDbGuardResult.status === "blocked" ||
+  levelDbGuardResult.status === "backup_failed"
+) {
+  const backupNote = levelDbGuardResult.status === "backup_failed"
+    ? `Automatic backup failed before startup (${levelDbGuardResult.error?.message || "unknown error"}). No files were modified.`
+    : `A forensic backup of your LevelDB folder was saved to:\n${levelDbGuardResult.backupDir}`;
+  const errorMessage = [
+    "Netcatty detected that your Local Storage LevelDB CURRENT index file is missing or empty while existing database files are still present.",
+    "Startup was stopped to prevent Chromium from wiping your saved hosts, workspaces, and sessions.",
+    backupNote,
+  ].join("\n\n");
+  console.error(
+    `[Main] Local Storage LevelDB guard blocked startup (${levelDbGuardResult.status}): ${errorMessage}`,
+  );
+  try {
+    electronModule.dialog?.showErrorBox?.("Netcatty Storage Protection", errorMessage);
+  } catch {
+    // ignore
+  }
+  app.exit(1);
+}
 const preload = path.join(__dirname, "preload.cjs");
 const isMac = process.platform === "darwin";
 const appIconManager = require("./bridges/appIconManager.cjs");
@@ -498,9 +528,7 @@ function getAppLockReopenWindows() {
 // Shared state
 const sessions = new Map();
 const sftpClients = new Map();
-const keyRoot = path.join(os.homedir(), ".netcatty", "keys");
 const APP_LOCK_SETTINGS_FILE = "app-lock-settings.json";
-let cloudSyncSessionPassword = null;
 const CLOUD_SYNC_PASSWORD_FILE = "netcatty_cloud_sync_master_password_v1";
 let appLockSettingsStore = null;
 const appLockRuntimeBridge = createAppLockRuntimeBridge();
@@ -526,31 +554,6 @@ function getAppLockNativeWindowHandle() {
   const win = getLiveAppLockWindows()[0] || null;
   return win ? win.getNativeWindowHandle() : null;
 }
-
-// Key management helpers
-const ensureKeyDir = async () => {
-  try {
-    await fs.promises.mkdir(keyRoot, { recursive: true, mode: 0o700 });
-  } catch (err) {
-    console.warn("Unable to ensure key cache dir", err);
-  }
-};
-
-const writeKeyToDisk = async (keyId, privateKey) => {
-  if (!privateKey) return null;
-  await ensureKeyDir();
-  const safeId = String(keyId || "temp").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120);
-  const filename = `${safeId}.pem`;
-  const target = path.join(keyRoot, filename);
-  const normalized = privateKey.endsWith("\n") ? privateKey : `${privateKey}\n`;
-  try {
-    await fs.promises.writeFile(target, normalized, { mode: 0o600 });
-    return target;
-  } catch (err) {
-    console.error("Failed to persist private key", err);
-    return null;
-  }
-};
 
 const { createBridgeRegistrar } = require("./main/registerBridges.cjs");
 
@@ -1751,6 +1754,11 @@ if (!gotLock) {
       console.warn("Error during port forwarding cleanup:", err);
     }
     try {
+      getFileWatcherBridge().cleanup?.();
+    } catch (err) {
+      console.warn("Error during file watcher cleanup:", err);
+    }
+    try {
       getGlobalShortcutBridge().cleanup();
     } catch (err) {
       console.warn("Error during global shortcut cleanup:", err);
@@ -1775,6 +1783,4 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
 module.exports = {
   sessions,
   sftpClients,
-  ensureKeyDir,
-  writeKeyToDisk,
 };

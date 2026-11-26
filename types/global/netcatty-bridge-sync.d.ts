@@ -167,8 +167,12 @@ declare global {
     cloudSyncWebdavUpload?(
       config: WebDAVConfig,
       syncedFile: SyncedFile
-    ): Promise<{ resourceId: string }>;
-    cloudSyncWebdavDownload?(config: WebDAVConfig): Promise<{ syncedFile: SyncedFile | null }>;
+    ): Promise<{ resourceId: string; etag?: string }>;
+    cloudSyncWebdavDownload?(config: WebDAVConfig, etag?: string): Promise<{
+      syncedFile: SyncedFile | null;
+      etag?: string;
+      notModified?: boolean;
+    }>;
     cloudSyncWebdavDelete?(config: WebDAVConfig): Promise<{ ok: true }>;
 
     cloudSyncS3Initialize?(config: S3Config): Promise<{ resourceId: string | null }>;
@@ -306,8 +310,9 @@ declare global {
     onLanguageChanged?(cb: (language: string) => void): () => void;
 
     // Chain progress listener for jump host connections
-    // Callback receives: (sessionId: string, currentHop: number, totalHops: number, hostLabel: string, status: string, error?: string)
-    onChainProgress?(cb: (sessionId: string, hop: number, total: number, label: string, status: string, error?: string) => void): () => void;
+    // Callback receives: (sessionId: string, currentHop: number, totalHops: number, hostLabel: string, status: string, error?: string, address?: string)
+    // `address` is the current hop's host:port, so the UI can show the hop being connected.
+    onChainProgress?(cb: (sessionId: string, hop: number, total: number, label: string, status: string, error?: string, address?: string) => void): () => void;
 
     // Fired when a requested SSH connection reuse cannot be honored and the
     // session falls back to a regular fresh connection.
